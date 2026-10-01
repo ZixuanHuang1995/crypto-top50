@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1319">
+<title>Top 50</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* 色彩與字型 token。--gain / --loss 為漲跌色；--amber 為強調色（前 10 大切換、上架時間、載入轉圈）。
+     全頁只有深色主題，沒有淺色模式。 */
+  :root{
+    --bg: #0E1319;
+    --bg-alt: #141B23;
+    --surface: #171F28;
+    --border: #253040;
+    --text: #E7ECF1;
+    --text-dim: #7C8896;
+    --text-faint: #4E5866;
+    --gain: #3ED598;
+    --loss: #FF6B6A;
+    --amber: #E8A93B;
+    --sans: 'IBM Plex Sans', -apple-system, sans-serif;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+  }
+  *{ box-sizing: border-box; }
+  html,body{
+    margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:var(--sans); -webkit-font-smoothing:antialiased;
+  }
+  body{ padding-bottom: 60px; }
+
+  /* 頂部控制列黏在畫面最上方。背景必須是實色：表格表頭黏在它正下方，
+     若下緣做成半透明漸層，捲上去的列與表頭會從漸層處透出來。 */
+  .topbar{
+    position: sticky; top:0; z-index: 20;
+    background: var(--bg);
+    padding: 28px 24px 14px;
+  }
+  .topbar-inner{ max-width: 1180px; margin: 0 auto; }
+  .title-row{
+    display:flex; align-items:baseline; justify-content:space-between; gap: 16px; flex-wrap: wrap;
+  }
+  h1{
+    font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.01em;
+  }
+  .sub{
+    color: var(--text-dim); font-size: 13px; margin-top: 4px; font-family: var(--mono);
+  }
+  .controls{
+    display:flex; align-items:center; gap:10px; margin-top:18px; flex-wrap: wrap;
+  }
+  .view-tabs{ display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .view-tabs button{
+    background: var(--surface); border:0; color: var(--text-dim);
+    padding: 9px 14px; font-family: var(--sans); font-size: 13px; cursor:pointer;
+  }
+  .view-tabs button + button{ border-left:1px solid var(--border); }
+  .view-tabs button:hover{ color: var(--text); }
+  .view-tabs button.active{ background: var(--border); color: var(--text); font-weight:600; }
+  input#search{
+    background: var(--surface); border:1px solid var(--border); color: var(--text);
+    padding: 9px 12px; border-radius: 6px; font-family: var(--sans); font-size:13px;
+    width: 220px; outline:none;
+  }
+  input#search::placeholder{ color: var(--text-faint); }
+  input#search:focus{ border-color: #3A4A5F; }
+  button#refresh{
+    background: var(--surface); border:1px solid var(--border); color: var(--text);
+    padding: 9px 14px; border-radius: 6px; font-family: var(--sans); font-size: 13px;
+    cursor:pointer; display:flex; align-items:center; gap:8px;
+  }
+  button#refresh:hover{ border-color:#3A4A5F; }
+  button#refresh:disabled{ opacity:.5; cursor:default; }
+  button#top10-toggle{
+    background: var(--surface); border:1px solid var(--border); color: var(--text-dim);
+    padding: 9px 14px; border-radius: 6px; font-family: var(--sans); font-size: 13px;
+    cursor:pointer;
+  }
+  button#top10-toggle:hover{ border-color:#3A4A5F; color: var(--text); }
+  button#top10-toggle.active{
+    background: rgba(232,169,59,0.12); border-color: var(--amber); color: var(--amber);
+  }
+  .listing-filters{ display:flex; gap:6px; align-items:center; }
+  .listing-filters button{
+    background:var(--surface); border:1px solid var(--border); color:var(--text-dim);
+    padding:7px 10px; border-radius:6px; font-family:var(--sans); font-size:12px; cursor:pointer;
+  }
+  .listing-filters button:hover{ color:var(--text); border-color:#3A4A5F; }
+  .listing-filters button.active{ background:rgba(62,213,152,.10); border-color:var(--gain); color:var(--gain); }
+  /* 載入轉圈：預設隱藏，refresh 按鈕加上 .loading（見 setLoading）時才顯示。 */
+  .spin{
+    width:12px; height:12px; border-radius:50%;
+    border: 2px solid var(--text-faint); border-top-color: var(--amber);
+    animation: spin .8s linear infinite; display:none;
+  }
+  .loading .spin{ display:inline-block; }
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+
+  .status{ font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin-left: auto; }
+  .status .err{ color: var(--loss); }
+
+  main{ max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+  .table-caption{ margin-top: 18px; color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
+  .table-caption + .table-wrap{ margin-top: 10px; }
+
+  /* 外框用 overflow: clip 裁出圓角：clip 不會形成捲動容器，表頭的 position: sticky 才能相對整頁生效
+     （hidden 是給不支援 clip 的舊瀏覽器的退路，那時表頭不會黏住）。
+     表格比外框寬時（窄螢幕），JS 會加上 .scroll-x 改成可水平捲動；外框此時成為捲動容器，表頭就不再黏住。 */
+  .table-wrap{
+    border: 1px solid var(--border); border-radius: 10px; margin-top: 18px;
+    background: var(--bg-alt); overflow: hidden; overflow: clip;
+  }
+  .table-wrap.scroll-x{ overflow-x: auto; }
+  table{ width:100%; border-collapse: collapse; min-width: 960px; }
+  /* 表頭黏在頂部控制列正下方；--topbar-h 由 JS 依控制列實際高度設定（控制列在窄螢幕會換行變高）。 */
+  thead th{
+    position: sticky; top: var(--topbar-h, 0px); z-index: 1; background: var(--bg-alt);
+    text-align: right; font-weight: 500; font-size: 12px; color: var(--text-dim);
+    padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap;
+    cursor: pointer; user-select: none;
+  }
+  /* 可水平捲動時外框是捲動容器，top 若仍是控制列高度會把表頭往下推，所以歸零。 */
+  .table-wrap.scroll-x thead th{ top: 0; }
+  thead th:hover{ color: var(--text); }
+  thead th.name-col, thead th:first-child{ text-align:left; }
+  thead th .arrow{ font-size: 10px; margin-left: 4px; opacity: .7; }
+  thead th .src{ display:block; font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+  /* 數字欄使用等寬字型，讓價格與百分比的位數上下對齊。 */
+  tbody td{
+    padding: 12px 16px; border-bottom: 1px solid var(--border); font-family: var(--mono);
+    font-size: 13px; text-align: right; white-space: nowrap;
+  }
+  tbody tr:last-child td{ border-bottom: none; }
+  tbody tr:hover{ background: rgba(255,255,255,0.02); }
+
+  td.rank{ color: var(--text-faint); text-align:left; width: 40px; }
+  td.name-cell{ text-align:left; font-family: var(--sans); }
+  .coin{ display:flex; align-items:center; gap:10px; }
+  .coin img{ width:22px; height:22px; border-radius:50%; flex-shrink:0; }
+  .coin-icon{ width:22px; height:22px; border-radius:50%; flex-shrink:0; display:block; }
+  /* 名稱過長（例如 "Binance Bridged USDT (BNB Smart Chain)"）時截斷，完整名稱放在 title 提示。 */
+  .coin .nm{ font-weight:500; font-size: 13.5px; max-width: 220px; overflow:hidden; text-overflow:ellipsis; }
+  .coin .sym{ color: var(--text-dim); font-size: 11.5px; font-family: var(--mono); margin-left:4px; }
+
+  /* 漲跌幅顏色：up / down / flat 由 pctCell() 依數值決定。 */
+  .pct{ font-weight:600; }
+  .pct.up{ color: var(--gain); }
+  .pct.down{ color: var(--loss); }
+  .pct.flat{ color: var(--text-dim); }
+
+  .mcap{ color: var(--text-dim); }
+  .dim{ color: var(--text-faint); }
+
+  .empty, .error-box{
+    text-align:center; padding: 60px 20px; color: var(--text-dim); font-family: var(--mono); font-size: 13px;
+  }
+  /* 下方「Crypto.com 新上架」區塊 */
+  .listing-section{ margin-top:24px; }
+  .section-heading{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:10px; flex-wrap:wrap; }
+  .section-heading h2{ margin:0; font-size:16px; letter-spacing:-.01em; }
+  .section-note{ color:var(--text-dim); font-size:12px; font-family:var(--mono); }
+  .listing-table{ min-width:720px; }
+  .listing-table thead th{ cursor:default; }
+  .listing-table thead th:hover{ color:var(--text-dim); }
+  .listing-date{ color:var(--amber); text-align:left !important; }
+  .listing-name{ color:var(--text-dim); margin-left:8px; }
+  .tag{
+    display:inline-block; margin-left:8px; padding:1px 6px; border:1px solid var(--amber); border-radius:4px;
+    font-family:var(--sans); font-size:11px; color:var(--amber);
+  }
+  .error-box .msg{ color: var(--loss); margin-bottom: 10px; }
+  .error-box button{
+    background: var(--surface); border:1px solid var(--border); color: var(--text);
+    padding: 8px 16px; border-radius: 6px; cursor:pointer; font-family: var(--sans); font-size:13px;
+  }
+
+  footer{
+    max-width: 1180px; margin: 22px auto 0; padding: 0 24px;
+    color: var(--text-faint); font-size: 11.5px; font-family: var(--mono); line-height:1.6;
+  }
+
+  ::-webkit-scrollbar{ height:8px; width:8px; }
+  ::-webkit-scrollbar-thumb{ background: var(--border); border-radius:4px; }
+
+  /* 大字閱讀模式（使用者要求）。這段刻意放在最後，用相同選擇器覆蓋上方的字級與內距；
+     要調整字級請改這裡，只改上方原始值不會有效果。 */
+  body{ font-size:15px; }
+  h1{ font-size:24px; }
+  .sub{ font-size:15px; }
+  input#search, button#refresh, button#top10-toggle, .view-tabs button{ font-size:15px; padding:11px 16px; }
+  .listing-filters button{ font-size:14px; padding:9px 12px; }
+  .status, .section-note, .table-caption, footer{ font-size:14px; }
+  thead th{ font-size:14px; padding:14px 18px; }
+  thead th .src{ font-size:12px; }
+  tbody td{ font-size:15px; padding:14px 18px; }
+  .coin .nm{ font-size:16px; }
+  .coin .sym{ font-size:14px; }
+  .tag{ font-size:12px; }
+  .empty, .error-box{ font-size:15px; }
+  .section-heading h2{ font-size:18px; }
+
+  /* 手機版（含 iOS Safari）。放在大字模式之後才能覆蓋它。 */
+  html{ -webkit-text-size-adjust: 100%; }          /* 防止 iOS 橫向時自動放大文字 */
+  button, input{ touch-action: manipulation; }     /* 取消雙擊縮放造成的點擊延遲 */
+  @media (max-width: 640px){
+    /* 控制列在手機上會換成好幾行、佔掉大半畫面，所以不黏在頂部（updateLayout 會把 --topbar-h 設為 0）。
+       左右留白用 env(safe-area-inset-*) 避開 iPhone 瀏海與圓角（需搭配 viewport-fit=cover）。 */
+    .topbar{
+      position: relative;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left));
+    }
+    main, footer{
+      padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right));
+    }
+    body{ padding-bottom: max(40px, env(safe-area-inset-bottom)); }
+    h1{ font-size:22px; }
+    .controls{ gap:8px; margin-top:12px; }
+    .view-tabs{ width:100%; }
+    .view-tabs button{ flex:1; }
+    /* iOS 會在輸入框字級 < 16px 時自動放大頁面，所以搜尋框固定 16px。 */
+    input#search{ width:100%; font-size:16px; }
+    button#refresh, button#top10-toggle{ flex:1; justify-content:center; padding:10px 12px; }
+    .status{ margin-left:0; width:100%; }
+
+    thead th{ padding:10px 10px; font-size:13px; }
+    tbody td{ padding:10px 10px; font-size:14px; }
+    .coin{ gap:8px; }
+    .coin .nm{ max-width:110px; font-size:15px; }
+    .coin .sym{ display:none; }                    /* 窄畫面只留名稱，代碼可從搜尋或圖示辨識 */
+    .section-heading{ flex-direction:column; align-items:flex-start; gap:8px; }
+
+    /* 主表水平捲動時，「#」與「幣種」兩欄固定在左側，捲到右邊的數字時仍看得到是哪個幣。 */
+    .rank-table th:nth-child(1), .rank-table td:nth-child(1){
+      position: sticky; left: 0; z-index: 2; width: 40px; min-width: 40px; background: var(--bg-alt);
+    }
+    .rank-table th:nth-child(2), .rank-table td:nth-child(2){
+      position: sticky; left: 40px; z-index: 2; background: var(--bg-alt);
+      box-shadow: 1px 0 0 var(--border);
+    }
+    .rank-table thead th:nth-child(1), .rank-table thead th:nth-child(2){ z-index: 3; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="title-row">
+      <div>
+        <h1>Top 50</h1>
+        <div class="sub" id="asof">尚未載入資料</div>
+      </div>
+    </div>
+    <!-- 分頁、搜尋、前 10 大切換作用於主表；「重新整理」會重新載入主表兩個分頁與新上架區塊。 -->
+    <div class="controls">
+      <div class="view-tabs" role="group" aria-label="排行依據">
+        <button type="button" data-view="marketCap" class="active" aria-pressed="true">市值排行</button>
+        <button type="button" data-view="volume" aria-pressed="false">交易量排行</button>
+      </div>
+      <input id="search" type="text" placeholder="搜尋幣種名稱或代碼…" autocomplete="off">
+      <button id="refresh" type="button"><span class="spin"></span><span id="refresh-label">重新整理</span></button>
+      <button id="top10-toggle" type="button">只顯示前 10 大</button>
+      <span class="status" id="status" aria-live="polite"></span>
+    </div>
+  </div>
+</div>
+
+<main>
+  <div class="table-caption" id="view-note"></div>
+  <div class="table-wrap">
+    <table class="rank-table">
+      <!-- data-key 對應每列資料物件的欄位名稱，點表頭即依該欄排序；.arrow 顯示目前的排序方向。
+           交易量欄的來源標示（全球 / Crypto.com）由 render() 依分頁填入。 -->
+      <thead>
+        <tr>
+          <th data-key="rank">#<span class="arrow"></span></th>
+          <th class="name-col" data-key="name">幣種<span class="arrow"></span></th>
+          <th data-key="price">價格 (USD)<span class="arrow"></span></th>
+          <th data-key="change24h">24h %<span class="arrow"></span></th>
+          <th data-key="change7d">7d %<span class="arrow"></span></th>
+          <th data-key="change30d">30d %<span class="arrow"></span></th>
+          <th data-key="globalRank">全球市值名次<span class="arrow"></span></th>
+          <th data-key="marketCap">市值<span class="arrow"></span></th>
+          <th data-key="volume">24h 交易量<span class="arrow"></span><span class="src" id="volume-src"></span></th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="9" class="empty">載入中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <!-- 新上架區塊：資料由 loadListings() 載入，renderListings() 依期間按鈕（data-listing-window 天數）篩選。 -->
+  <section class="listing-section" aria-labelledby="listing-heading">
+    <div class="section-heading">
+      <h2 id="listing-heading">Crypto.com 新上架</h2>
+      <div class="listing-filters" role="group" aria-label="新上架期間">
+        <button type="button" class="active" data-listing-window="30" aria-pressed="true">1 個月</button>
+        <button type="button" data-listing-window="7" aria-pressed="false">7 天</button>
+        <button type="button" data-listing-window="90" aria-pressed="false">3 個月</button>
+      </div>
+      <span class="section-note" id="listing-note"></span>
+    </div>
+    <div class="table-wrap">
+      <table class="listing-table">
+        <thead><tr><th>上架時間</th><th class="name-col">幣種</th><th>公告交易對</th><th>目前可交易對</th></tr></thead>
+        <tbody id="listing-tbody"><tr><td colspan="4" class="empty">載入中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+  <footer>
+    市值排行：CoinGecko Public API（全球市值、價格、漲跌幅與交易量）。交易量排行：Crypto.com Exchange Public API 的 USD 現貨 24 小時成交額，7d / 30d 以 Crypto.com 4 小時 K 線收盤價計算，市值、幣名與 Logo 以代碼對應 CoinGecko。新上架：Crypto.com Exchange 官方上架公告（經 r.jina.ai 轉送），可交易對取自 Crypto.com 交易商品清單。<br>
+    若載入失敗，通常是免費公開 API 暫時限流或網路阻擋，稍候按「重新整理」即可。
+  </footer>
+</main>
+
+<script>
+  /*
+   * 資料流概覽
+   *
+   * 主表有兩個分頁，資料各自載入、互不影響（一邊失敗另一邊照常顯示）：
+   *   市值排行   loadMarketCapView()  CoinGecko 依全球市值取前 50；價格、24h / 7d / 30d、市值、交易量一次取得。
+   *   交易量排行 loadVolumeView()     Crypto.com 全部 ticker → 只留 *_USD 現貨 → 依 24h 成交額取前 50，
+   *                                  之後在背景執行：
+   *                                    enrichFromCoinGecko()   以代碼向 CoinGecko 補市值、全名與 Logo
+   *                                    loadHistoricalChanges() 逐幣抓 Crypto.com 日 K 線算 7d / 30d
+   *   任何資料到齊都呼叫 render() 重繪目前分頁；排序、搜尋、前 10 大篩選都在 render() 內處理。
+   *
+   * 新上架區塊
+   *   loadListings() 讀 Crypto.com Exchange 官方上架公告，再對照 get-instruments 列出各幣目前可交易的交易對；
+   *   renderListings() 依 7 / 30 / 90 天篩選。
+   *
+   * CORS：Crypto.com Exchange API 與 r.jina.ai 會回傳對應的 Access-Control-Allow-Origin
+   * （以 file:// 開啟時 Origin 為 "null" 也接受），CoinGecko 回傳 "*"，所以可直接雙擊本機檔案開啟。
+   * 唯一例外是公告 API 沒有 CORS 標頭，因此經 r.jina.ai 轉送。
+   */
+
+  // Crypto.com 行情。回傳欄位為縮寫，數值皆為字串：
+  //   i  = 交易對名稱（BTC_USD、BTCUSD-PERP…）   a = 最新成交價   c = 24h 漲跌「比例」（0.0065 即 +0.65%；無成交時為 null）
+  //   vv = 24h 成交額（USD）   v = 24h 成交量（幣數）   h / l = 24h 高 / 低   b / k = 買一 / 賣一   t = 時間戳（ms）
+  const TICKERS_API = "https://api.crypto.com/exchange/v1/public/get-tickers";
+  // K 線：t = 該根開始時間（ms）、o / h / l / c = 開高低收、v = 成交量；由舊到新排列，最後一根尚未收盤。
+  const CANDLESTICK_API = "https://api.crypto.com/exchange/v1/public/get-candlestick";
+  // 所有交易商品（現貨 CCY_PAIR、永續 PERPETUAL_SWAP、期貨 FUTURE），用來列出各幣目前可交易的現貨交易對。
+  const INSTRUMENTS_API = "https://api.crypto.com/exchange/v1/public/get-instruments";
+  // Crypto.com Exchange 官方上架公告（約一年份，含實際開放交易時間）。此端點沒有 CORS 標頭，瀏覽器無法直接讀，
+  // 所以經 r.jina.ai 轉送：帶 accept: application/json 時，原始回應字串會放在 data.content。
+  // r.jina.ai 未帶 API key 時每分鐘限 20 次請求，本頁每次載入只用 1 次。
+  const ANNOUNCEMENTS_API = "https://r.jina.ai/https://api.crypto.com/v1/public/get-announcements?category=list&product_type=Spot";
+  // CoinGecko 市場資料（免金鑰，有速率限制）。price_change_percentage 讓回應多帶 24h / 7d / 30d 漲跌幅。
+  const COINGECKO_MARKETS_API = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&sparkline=false&price_change_percentage=24h,7d,30d";
+
+  // 兩個分頁的說明文字與交易量來源。兩個分頁的交易量來源不同，表頭與說明都要標清楚。
+  const VIEWS = {
+    marketCap: {
+      volumeSource: "全球",
+      note: "只列 Crypto.com 可交易的幣，依 CoinGecko 全球市值排序；價格、漲跌幅與交易量皆為 CoinGecko 全球彙整資料。"
+    },
+    volume: {
+      volumeSource: "Crypto.com",
+      note: "依 Crypto.com USD 現貨 24h 成交額排序；價格與漲跌幅為 Crypto.com 報價，市值與幣名以代碼對應 CoinGecko。"
+    }
+  };
+
+  // 頁面狀態：
+  //   datasets       兩個分頁各自的資料。rows 為表格列（格式見 fromCoinGecko）；error 為主要請求失敗訊息；
+  //                  warning 為次要資料失敗（例如市值補不到）；historyNote 為 7d / 30d 的計算進度或結果。
+  //   loadGeneration 每次 load() 遞增。非同步結果回來時若編號已過期就丟棄，避免計算途中按了重新整理，
+  //                  舊資料又蓋掉新資料。
+  const datasets = {
+    marketCap: { rows: [], error: "", warning: "", historyNote: "" },
+    volume: { rows: [], error: "", warning: "", historyNote: "" }
+  };
+  let activeView = "marketCap";
+  let sortKey = "rank";
+  let sortDir = 1;          // 1 = 遞增、-1 = 遞減
+  let top10Only = false;
+  let loadGeneration = 0;
+  // 新上架清單，每筆為 { time（上架時間 ms）, base, name, listedPairs, currentPairs }；
+  // currentPairs 為 null 代表交易對清單載入失敗。
+  let listings = [];
+  let listingWindow = 30;   // 預設 1 個月，需與 HTML 中預設 active 的按鈕一致
+  // 載入失敗過的 Logo 網址，之後直接用本機圖示，避免每次重繪又失敗一次。
+  const failedImages = new Set();
+
+  const tbody = document.getElementById("tbody");
+  const asof = document.getElementById("asof");
+  const statusEl = document.getElementById("status");
+  const refreshBtn = document.getElementById("refresh");
+  const refreshLabel = document.getElementById("refresh-label");
+  const searchInput = document.getElementById("search");
+  const viewNote = document.getElementById("view-note");
+  const volumeSrc = document.getElementById("volume-src");
+  const viewTabs = document.querySelectorAll("[data-view]");
+  const sortHeaders = document.querySelectorAll("thead th[data-key]");
+  const listingTbody = document.getElementById("listing-tbody");
+  const listingNote = document.getElementById("listing-note");
+
+  // 外部資料（幣名、公告內容、錯誤訊息）一律跳脫後才放進 innerHTML。
+  function escapeHtml(value){
+    return String(value ?? "").replace(/[&<>"']/g, ch =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+  }
+
+  // API 數值多為字串，也可能是 null；轉成數字，無效值一律回傳 null（畫面顯示「—」）。
+  function toNumber(value){
+    if(value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function errorMessage(err){
+    // fetch 本身失敗（斷線、被擋、CORS）時，各瀏覽器的訊息不同且多為英文，統一換成中文。
+    if(err && err.name === "TypeError" && /fetch|network|load failed/i.test(err.message)) return "網路錯誤或請求被瀏覽器阻擋";
+    return (err && err.message) || "未知錯誤";
+  }
+
+  // fetch + 檢查 HTTP 狀態 + 解析 JSON。429 代表被限流，給較易懂的訊息。
+  async function fetchJson(url, source){
+    const response = await fetch(url, { headers: { accept: "application/json" } });
+    if(response.status === 429) throw new Error(`${source} 請求過於頻繁（HTTP 429），請稍候再重新整理`);
+    if(!response.ok) throw new Error(`${source} HTTP ${response.status}`);
+    return response.json();
+  }
+
+  // CoinGecko 一筆 → 表格一列。兩個分頁共用這個列格式：
+  //   { rank, name, symbol, image, price, change24h, change7d, change30d（百分比數值）, marketCap, volume（USD） }
+  function fromCoinGecko(coin, index){
+    const symbol = String(coin.symbol || "").toUpperCase();
+    return {
+      rank: index + 1,
+      name: coin.name || symbol,
+      symbol,
+      image: coin.image,
+      price: toNumber(coin.current_price),
+      change24h: toNumber(coin.price_change_percentage_24h_in_currency),
+      change7d: toNumber(coin.price_change_percentage_7d_in_currency),
+      change30d: toNumber(coin.price_change_percentage_30d_in_currency),
+      // CoinGecko 不知道市值時回傳 0，視同無資料。
+      marketCap: toNumber(coin.market_cap) || null,
+      // CoinGecko 全球市值名次；沒有市值資料的幣為 null。
+      globalRank: toNumber(coin.market_cap_rank),
+      volume: toNumber(coin.total_volume)
+    };
+  }
+
+  async function loadMarketCapView(generation){
+    const dataset = datasets.marketCap;
+    try {
+      // 只列 Crypto.com 上可交易（有 tradable 現貨交易對）的幣：先取 CoinGecko 市值前 250 名，
+      // 以代碼比對 Crypto.com 現貨的 base 幣，再取前 50。# 為篩選後的名次，不是全球市值名次。
+      // 以代碼比對有撞名風險；同代碼只取市值最大的那個（CoinGecko 依市值排序，先出現者優先）。
+      const [coins, instrumentsPayload] = await Promise.all([
+        fetchJson(`${COINGECKO_MARKETS_API}&order=market_cap_desc&per_page=250&page=1`, "CoinGecko"),
+        fetchJson(INSTRUMENTS_API, "Crypto.com")
+      ]);
+      if(!Array.isArray(coins)) throw new Error("CoinGecko 回應格式不符");
+      const instruments = instrumentsPayload?.result?.data;
+      if(!Array.isArray(instruments)) throw new Error("Crypto.com 交易商品回應格式不符");
+      if(generation !== loadGeneration) return;
+      const tradable = new Set(instruments
+        .filter(item => item.inst_type === "CCY_PAIR" && item.tradable && item.base_ccy)
+        .map(item => item.base_ccy.toUpperCase()));
+      const seen = new Set();
+      dataset.rows = coins
+        .filter(coin => {
+          const symbol = String(coin.symbol || "").toUpperCase();
+          if(!tradable.has(symbol) || seen.has(symbol)) return false;
+          seen.add(symbol);
+          return true;
+        })
+        .slice(0, 50)
+        .map(fromCoinGecko);
+      dataset.error = "";
+    } catch(err) {
+      if(generation !== loadGeneration) return;
+      // 保留上一次成功的資料，只在狀態列提示；完全沒有資料時 render() 會顯示錯誤框。
+      dataset.error = errorMessage(err);
+    }
+    render();
+  }
+
+  async function loadVolumeView(generation){
+    const dataset = datasets.volume;
+    try {
+      const payload = await fetchJson(TICKERS_API, "Crypto.com");
+      const tickers = payload?.result?.data;
+      if(!Array.isArray(tickers)) throw new Error("Crypto.com 回應格式不符");
+      if(generation !== loadGeneration) return;
+      // 上一輪補到的幣名與 Logo 先沿用，避免重新整理時名稱閃回代碼；數值類欄位一律重算。
+      const previous = new Map(dataset.rows.map(row => [row.symbol, row]));
+      dataset.rows = tickers
+        // 以 "_USD" 結尾：排除永續合約（BTCUSD-PERP）與 USDT 計價（BTC_USDT），每個幣只取一個 USD 現貨交易對，
+        // 成交額才能互相比較。穩定幣與黃金代幣也會入榜（例如 USDT_USD、PAXG_USD、XAUT_USD）。
+        .filter(t => typeof t.i === "string" && t.i.endsWith("_USD") && toNumber(t.vv) > 0)
+        .sort((a, b) => toNumber(b.vv) - toNumber(a.vv))
+        .slice(0, 50)
+        .map((t, i) => {
+          const symbol = t.i.replace(/_USD$/, "");
+          const change = toNumber(t.c);
+          return {
+            rank: i + 1,
+            // Crypto.com 沒有幣種全名，先用代碼，enrichFromCoinGecko() 會補上。
+            name: previous.get(symbol)?.name || symbol,
+            symbol,
+            image: previous.get(symbol)?.image || null,
+            instrument: t.i,
+            price: toNumber(t.a),
+            change24h: change === null ? null : change * 100,
+            change7d: null,
+            change30d: null,
+            marketCap: null,
+            globalRank: null,
+            volume: toNumber(t.vv)
+          };
+        });
+      dataset.error = "";
+      dataset.warning = "";
+      dataset.historyNote = "正在計算 7d / 30d…";
+      render();
+      // 以下兩者都不 await：表格先顯示，市值與 7d / 30d 陸續補上。
+      enrichFromCoinGecko(dataset.rows, generation);
+      loadHistoricalChanges(dataset.rows, generation);
+    } catch(err) {
+      if(generation !== loadGeneration) return;
+      dataset.error = errorMessage(err);
+      render();
+    }
+  }
+
+  // 以代碼向 CoinGecko 查市值、全名與 Logo。include_tokens=top：同一代碼有多個幣時只回傳市值最大的那個；
+  // 2026-10-01 實測交易量前 50 的代碼全部對到正確的幣（例如 CRO → crypto-com-chain、W → wormhole）。
+  // 仍有風險：若 Crypto.com 上的幣與 CoinGecko 上市值最大的同代碼幣不是同一個，市值會對錯。
+  async function enrichFromCoinGecko(rows, generation){
+    try {
+      const symbols = rows.map(row => encodeURIComponent(row.symbol.toLowerCase())).join(",");
+      const coins = await fetchJson(`${COINGECKO_MARKETS_API}&symbols=${symbols}&include_tokens=top&per_page=250`, "CoinGecko");
+      if(!Array.isArray(coins)) throw new Error("CoinGecko 回應格式不符");
+      if(generation !== loadGeneration) return;
+      const bySymbol = new Map();
+      coins.forEach(coin => {
+        const key = String(coin.symbol || "").toUpperCase();
+        if(!bySymbol.has(key)) bySymbol.set(key, coin);
+      });
+      rows.forEach(row => {
+        const coin = bySymbol.get(row.symbol);
+        if(!coin) return;
+        row.name = coin.name || row.symbol;
+        row.image = coin.image;
+        row.marketCap = toNumber(coin.market_cap) || null;
+        row.globalRank = toNumber(coin.market_cap_rank);
+      });
+    } catch(err) {
+      if(generation !== loadGeneration) return;
+      datasets.volume.warning = `市值資料載入失敗（${errorMessage(err)}），市值欄暫以「—」顯示`;
+    }
+    render();
+  }
+
+  // 為每個幣抓最近 200 根 4 小時 K 線（約 33 天），以「現價 ÷ N 天前價格 − 1」計算 7d / 30d 漲跌幅。
+  // 用 4 小時而非日 K：日 K 的誤差最多一天，行情急漲時差很多（2026-10-01 實測 QNT 7d 日 K 算出 +225%，
+  // 4 小時 K 為 +314%，CoinGecko 為 +322%）。
+  // 每個交易對要各打一次 API，所以分批（每批 5 個）並行，每批完成就重繪一次。
+  async function loadHistoricalChanges(rows, generation){
+    const batchSize = 5;
+    let failed = 0;
+    for(let start = 0; start < rows.length; start += batchSize){
+      if(generation !== loadGeneration) return;
+      const batch = rows.slice(start, start + batchSize);
+      const results = await Promise.allSettled(batch.map(async row => {
+        const url = `${CANDLESTICK_API}?instrument_name=${encodeURIComponent(row.instrument)}&timeframe=4h&count=200`;
+        const payload = await fetchJson(url, "Crypto.com");
+        const candles = payload?.result?.data;
+        if(!Array.isArray(candles) || !candles.length) return;
+        const ordered = candles.slice().sort((a, b) => Number(a.t) - Number(b.t));
+        // 取「開始時間 ≤ N 天前」的最後一根 K 線收盤價當作 N 天前的價格。收盤是該根結束時的價格，
+        // 與精確的 N×24 小時前最多差 4 小時，屬近似值。上線不滿 N 天就找不到，該欄顯示「—」。
+        const priceAtDaysAgo = days => {
+          const target = Date.now() - days * 86400000;
+          const candidates = ordered.filter(c => Number(c.t) <= target);
+          return candidates.length ? toNumber(candidates[candidates.length - 1].c) : null;
+        };
+        const price7d = priceAtDaysAgo(7);
+        const price30d = priceAtDaysAgo(30);
+        if(row.price !== null && price7d > 0) row.change7d = (row.price / price7d - 1) * 100;
+        if(row.price !== null && price30d > 0) row.change30d = (row.price / price30d - 1) * 100;
+      }));
+      if(generation !== loadGeneration) return;
+      failed += results.filter(result => result.status === "rejected").length;
+      const done = Math.min(start + batchSize, rows.length);
+      datasets.volume.historyNote = done < rows.length
+        ? `正在計算 7d / 30d（${done}/${rows.length}）…`
+        : (failed ? `${failed} 個幣的 7d / 30d 無法取得` : "");
+      render();
+    }
+  }
+
+  // 價格格式：≥ 1000 不顯示小數、≥ 1 顯示 2 位；< 1 改用 4 位有效數字，
+  // 讓極小價格保有精度（例如 SHIB 0.000005739 不會被四捨五入成 0.000006）。
+  function fmtPrice(n){
+    if(n === null || n === undefined || !Number.isFinite(n)) return "—";
+    if(n >= 1000) return "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    if(n >= 1) return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if(n === 0) return "$0";
+    return "$" + n.toLocaleString(undefined, { maximumSignificantDigits: 4 });
+  }
+
+  // 金額縮寫（$1.68T、$328.43B），用於市值與交易量；0 或無資料顯示「—」。
+  function fmtUsdCompact(n){
+    if(!n) return "—";
+    const units = [[1e12,"T"],[1e9,"B"],[1e6,"M"],[1e3,"K"]];
+    for(const [v,label] of units){
+      if(n >= v) return "$" + (n/v).toFixed(2) + label;
+    }
+    return "$" + n.toFixed(0);
+  }
+
+  // 輸入為已 ×100 的百分比數值。
+  function pctCell(n){
+    if(n === null || n === undefined || !Number.isFinite(n)) return '<span class="pct flat">—</span>';
+    // |n| < 0.005 四捨五入後是 0.00，歸為 flat（灰色），也避免出現「+0.00%」「-0.00%」。
+    if(Math.abs(n) < 0.005) return '<span class="pct flat">0.00%</span>';
+    return n > 0
+      ? `<span class="pct up">+${n.toFixed(2)}%</span>`
+      : `<span class="pct down">${n.toFixed(2)}%</span>`;
+  }
+
+  // 沒有 Logo 時的本機圖示：代碼前兩字的圓形 SVG（data URI）。
+  // hash 是 Java String.hashCode 的寫法（hash × 31 + 字元碼，| 0 保持 32 位元整數），同一代碼永遠得到同一個色相。
+  function tokenIcon(symbol){
+    let hash = 0;
+    for(const char of symbol) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+    const hue = Math.abs(hash) % 360;
+    const label = escapeHtml(symbol.slice(0, 2).toUpperCase());
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="hsl(${hue} 50% 32%)"/><circle cx="12" cy="12" r="9" fill="none" stroke="hsl(${hue} 65% 57%)" stroke-width="1"/><text x="12" y="15" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" font-weight="700" fill="white">${label}</text></svg>`;
+    return "data:image/svg+xml," + encodeURIComponent(svg);
+  }
+
+  // 只接受 https 的 CoinGecko Logo，且沒失敗過；否則用本機圖示。
+  function iconFor(row){
+    const url = row.image || "";
+    return /^https:\/\//.test(url) && !failedImages.has(url) ? url : tokenIcon(row.symbol);
+  }
+
+  // 狀態列：顯示目前分頁的錯誤、警告與背景計算進度。
+  function renderStatus(dataset){
+    const parts = [];
+    // 沒有任何資料時錯誤已顯示在表格的錯誤框，這裡只處理「重新整理失敗、畫面仍是上一次資料」的情況。
+    if(dataset.error && dataset.rows.length) parts.push(`<span class="err">更新失敗，顯示上一次的資料：${escapeHtml(dataset.error)}</span>`);
+    if(dataset.warning) parts.push(`<span class="err">${escapeHtml(dataset.warning)}</span>`);
+    if(dataset.historyNote) parts.push(escapeHtml(dataset.historyNote));
+    statusEl.innerHTML = parts.join(" · ");
+  }
+
+  // 主表重繪：更新分頁 / 表頭狀態 → 依搜尋字（比對名稱與代碼）與前 10 大篩選 → 排序 → 用 innerHTML 換掉 tbody。
+  function render(){
+    const dataset = datasets[activeView];
+    viewNote.textContent = VIEWS[activeView].note;
+    volumeSrc.textContent = VIEWS[activeView].volumeSource;
+    viewTabs.forEach(btn => {
+      const on = btn.dataset.view === activeView;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", on);
+    });
+    sortHeaders.forEach(th => {
+      const on = th.dataset.key === sortKey;
+      th.querySelector(".arrow").textContent = on ? (sortDir === 1 ? "▲" : "▼") : "";
+      if(on) th.setAttribute("aria-sort", sortDir === 1 ? "ascending" : "descending");
+      else th.removeAttribute("aria-sort");
+    });
+    renderStatus(dataset);
+
+    if(!dataset.rows.length){
+      tbody.innerHTML = dataset.error ? `
+        <tr><td colspan="9">
+          <div class="error-box">
+            <div class="msg">載入失敗：${escapeHtml(dataset.error)}</div>
+            <div style="margin-bottom:14px; color:var(--text-faint);">
+              請確認裝置已連上網路，稍候幾秒後點下方按鈕重試（免費公開 API 可能暫時限流）。
+            </div>
+            <button type="button" onclick="load()">重試</button>
+          </div>
+        </td></tr>` : '<tr><td colspan="9" class="empty">載入中…</td></tr>';
+      return;
+    }
+
+    const q = searchInput.value.trim().toLowerCase();
+    const rows = dataset.rows.filter(row =>
+      (!q || row.name.toLowerCase().includes(q) || row.symbol.toLowerCase().includes(q)) &&
+      (!top10Only || row.rank <= 10)
+    );
+
+    // null（例如 7d / 30d 尚未算出、市值對不到）不論升降冪一律排最後；同值時維持原本名次順序（sort 為穩定排序）。
+    rows.sort((a, b) => {
+      const av = a[sortKey], bv = b[sortKey];
+      if(av === null || av === undefined) return (bv === null || bv === undefined) ? 0 : 1;
+      if(bv === null || bv === undefined) return -1;
+      if(typeof av === "string") return sortDir * av.localeCompare(bv);
+      return sortDir * (av - bv);
+    });
+
+    if(rows.length === 0){
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">找不到符合「${escapeHtml(q)}」的幣種</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map(row => `
+      <tr>
+        <td class="rank">${row.rank}</td>
+        <td class="name-cell"><div class="coin"><img class="coin-icon" src="${escapeHtml(iconFor(row))}" data-symbol="${escapeHtml(row.symbol)}" alt="" aria-hidden="true"><span class="nm" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>${row.name !== row.symbol ? `<span class="sym">${escapeHtml(row.symbol)}</span>` : ""}</div></td>
+        <td>${fmtPrice(row.price)}</td>
+        <td>${pctCell(row.change24h)}</td>
+        <td>${pctCell(row.change7d)}</td>
+        <td>${pctCell(row.change30d)}</td>
+        <td class="mcap">${row.globalRank ?? "—"}</td>
+        <td class="mcap">${fmtUsdCompact(row.marketCap)}</td>
+        <td class="mcap">${fmtUsdCompact(row.volume)}</td>
+      </tr>`).join("");
+  }
+
+  // 公告 → 新上架一筆；不是交易對上架的公告回傳 null。
+  //   - category=list 也包含「新增充值網路」之類的公告，標題沒有 BASE/QUOTE，這類跳過。
+  //   - 公告可能是新幣上架（CARDS/USD），也可能是既有幣新增交易對（XAUT/BTC、PAXG/EUR），兩者都列出。
+  //   - 時間優先用 start_time（實際開放交易）；announced_at 只精確到日期（UTC 00:00）。
+  function parseListing(item, current){
+    const listedPairs = [...String(item.title || "").matchAll(/\b([A-Z0-9]{1,20})\/([A-Z0-9]{2,10})\b/g)]
+      .map(m => `${m[1]}/${m[2]}`);
+    const time = toNumber(item.start_time) || toNumber(item.announced_at);
+    if(!listedPairs.length || !time) return null;
+    const base = listedPairs[0].split("/")[0];
+    // 內文多為「Collector Crypt ($CARDS) is now listed…」，從中取出幣種全名；格式不符就只顯示代碼。
+    // DOMParser 產生的文件不會執行腳本或載入圖片，這裡只用來把公告 HTML 轉成純文字。
+    const text = new DOMParser().parseFromString(String(item.content || ""), "text/html").body.textContent || "";
+    const nameMatch = text.match(/^\s*(.{1,40}?)\s*\(\$([A-Z0-9]+)\)\s+is now listed/);
+    const name = nameMatch && nameMatch[2] === base ? nameMatch[1].trim() : "";
+    return {
+      time,
+      base,
+      name: name !== base ? name : "",
+      listedPairs,
+      currentPairs: current ? (current.get(base) || []) : null
+    };
+  }
+
+  async function loadListings(generation){
+    listingTbody.innerHTML = '<tr><td colspan="4" class="empty">正在讀取 Crypto.com 上架公告…</td></tr>';
+    listingNote.textContent = "";
+    const [announcementsResult, instrumentsResult] = await Promise.allSettled([
+      fetchJson(ANNOUNCEMENTS_API, "公告"),
+      fetchJson(INSTRUMENTS_API, "Crypto.com")
+    ]);
+    if(generation !== loadGeneration) return;
+    try {
+      if(announcementsResult.status === "rejected") throw announcementsResult.reason;
+      const wrapper = announcementsResult.value;
+      // r.jina.ai 把原始回應字串放在 data.content；若改成直接回傳原始 JSON（有 result）也一併接受。
+      const payload = wrapper?.result ? wrapper : JSON.parse(wrapper?.data?.content || "null");
+      const announcements = payload?.result?.data;
+      if(!Array.isArray(announcements)) throw new Error("公告回應格式不符");
+
+      // 目前可交易的現貨交易對：base 幣 → ["BTC/USD", "BTC/USDT", …]。這份清單載入失敗時仍顯示公告，該欄改為「—」。
+      let current = null;
+      const instruments = instrumentsResult.status === "fulfilled" ? instrumentsResult.value?.result?.data : null;
+      if(Array.isArray(instruments)){
+        current = new Map();
+        instruments
+          .filter(item => item.inst_type === "CCY_PAIR" && item.tradable && item.base_ccy)
+          .forEach(item => {
+            if(!current.has(item.base_ccy)) current.set(item.base_ccy, []);
+            current.get(item.base_ccy).push(item.display_name || item.symbol);
+          });
+      }
+
+      listings = announcements.map(item => parseListing(item, current)).filter(Boolean);
+      renderListings();
+    } catch(err) {
+      listings = [];
+      listingTbody.innerHTML = `<tr><td colspan="4" class="empty">新上架清單無法載入：${escapeHtml(errorMessage(err))}</td></tr>`;
+      listingNote.textContent = "載入失敗";
+    }
+  }
+
+  // 依 listingWindow 篩出最近 N×24 小時內（含已公告但尚未開放的「即將上架」）的公告並畫出表格。
+  function renderListings(){
+    const now = Date.now();
+    const cutoff = now - listingWindow * 86400000;
+    const rows = listings.filter(item => item.time >= cutoff).sort((a, b) => b.time - a.time);
+    const windowText = listingWindow === 7 ? "最近 7 天" : listingWindow === 30 ? "最近 1 個月" : "最近 3 個月";
+    listingNote.textContent = `官方上架公告 · ${windowText} · ${rows.length} 筆`;
+    if(!rows.length){
+      listingTbody.innerHTML = `<tr><td colspan="4" class="empty">${windowText}沒有 Crypto.com 現貨上架公告</td></tr>`;
+      return;
+    }
+    const fmtTime = ms => new Date(ms).toLocaleString("zh-TW", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false
+    });
+    listingTbody.innerHTML = rows.map(item => `
+      <tr>
+        <td class="listing-date">${escapeHtml(fmtTime(item.time))}${item.time > now ? '<span class="tag">即將上架</span>' : ""}</td>
+        <td class="name-cell"><span class="nm">${escapeHtml(item.base)}</span>${item.name ? `<span class="listing-name">${escapeHtml(item.name)}</span>` : ""}</td>
+        <td>${escapeHtml(item.listedPairs.join(", "))}</td>
+        <td>${item.currentPairs === null ? "—"
+          : item.currentPairs.length ? escapeHtml(item.currentPairs.join(", "))
+          : '<span class="dim">目前無可交易對</span>'}</td>
+      </tr>`).join("");
+  }
+
+  function setLoading(on){
+    refreshBtn.disabled = on;
+    refreshBtn.classList.toggle("loading", on);
+    refreshLabel.textContent = on ? "載入中" : "重新整理";
+  }
+
+  // 重新載入全部資料：兩個分頁與新上架區塊並行，各自處理錯誤。
+  // 7d / 30d 與市值補充在背景繼續跑，不會讓按鈕一直停在「載入中」。
+  async function load(){
+    const generation = ++loadGeneration;
+    setLoading(true);
+    await Promise.allSettled([
+      loadMarketCapView(generation),
+      loadVolumeView(generation),
+      loadListings(generation)
+    ]);
+    if(generation !== loadGeneration) return;
+    asof.textContent = "更新時間：" + new Date().toLocaleString("zh-TW", { hour12: false });
+    setLoading(false);
+  }
+
+  // 點表頭排序：點同一欄切換升降冪；換欄時「#」「幣種」「全球市值名次」預設遞增，其餘數值欄預設遞減（大的在前）。
+  sortHeaders.forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      if(sortKey === key){ sortDir *= -1; } else { sortKey = key; sortDir = (key === "rank" || key === "name" || key === "globalRank") ? 1 : -1; }
+      render();
+    });
+  });
+
+  // 切換分頁：兩個分頁的資料在 load() 時都已載入，切換只需重繪（排序、搜尋、前 10 大設定沿用）。
+  viewTabs.forEach(btn => {
+    btn.addEventListener("click", () => {
+      activeView = btn.dataset.view;
+      render();
+    });
+  });
+
+  // Logo 載入失敗時換成本機圖示。error 事件不會冒泡，所以在捕獲階段監聽。
+  tbody.addEventListener("error", event => {
+    const img = event.target;
+    if(!(img instanceof HTMLImageElement) || img.src.startsWith("data:")) return;
+    failedImages.add(img.getAttribute("src"));
+    img.src = tokenIcon(img.dataset.symbol || "?");
+  }, true);
+
+  searchInput.addEventListener("input", render);
+  refreshBtn.addEventListener("click", load);
+
+  const top10Btn = document.getElementById("top10-toggle");
+  top10Btn.addEventListener("click", () => {
+    top10Only = !top10Only;
+    top10Btn.classList.toggle("active", top10Only);
+    top10Btn.textContent = top10Only ? "顯示全部 50 大" : "只顯示前 10 大";
+    render();
+  });
+
+  // 新上架期間按鈕：只切換篩選天數並重繪，不會重新抓資料。
+  document.querySelectorAll("[data-listing-window]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      listingWindow = Number(btn.dataset.listingWindow);
+      document.querySelectorAll("[data-listing-window]").forEach(item => {
+        item.classList.toggle("active", item === btn);
+        item.setAttribute("aria-pressed", item === btn);
+      });
+      renderListings();
+    });
+  });
+
+  // 版面量測：把頂部控制列高度寫進 --topbar-h（表頭黏在它下方），並在表格比外框寬時切換成可水平捲動
+  // （原因見 .table-wrap 的 CSS 說明）。控制列換行、視窗縮放、表格內容改變時都會重新量測。
+  const topbarEl = document.querySelector(".topbar");
+  const tableWraps = [...document.querySelectorAll(".table-wrap")];
+  function updateLayout(){
+    // 手機版控制列不黏頂（見 CSS），此時表頭也不需要往下讓位。
+    const topbarSticky = getComputedStyle(topbarEl).position === "sticky";
+    document.documentElement.style.setProperty("--topbar-h", (topbarSticky ? topbarEl.offsetHeight : 0) + "px");
+    tableWraps.forEach(wrap => {
+      // +1 容忍小數像素的捨入誤差，避免寬度剛好時誤判成需要捲動。
+      wrap.classList.toggle("scroll-x", wrap.querySelector("table").offsetWidth > wrap.clientWidth + 1);
+    });
+  }
+  const layoutObserver = new ResizeObserver(updateLayout);
+  layoutObserver.observe(topbarEl);
+  tableWraps.forEach(wrap => {
+    layoutObserver.observe(wrap);
+    layoutObserver.observe(wrap.querySelector("table"));
+  });
+
+  render();
+  load();
+</script>
+</body>
+</html>

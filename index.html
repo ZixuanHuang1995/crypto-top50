@@ -154,6 +154,10 @@
   .pct.flat{ color: var(--text-dim); }
 
   .mcap{ color: var(--text-dim); }
+  /* 往返成本兩欄只在「交易成本排名」分頁顯示（render() 依分頁切換 table 的 view-combined 類別）。 */
+  .rank-table:not(.view-combined) .combined-only{ display: none; }
+  /* 「交易成本排名」不顯示 24h 交易量欄（其餘分頁照常顯示）。 */
+  .rank-table.view-combined .hide-combined{ display: none; }
   .dim{ color: var(--text-faint); }
 
   .empty, .error-box{
@@ -261,6 +265,7 @@
       <div class="view-tabs" role="group" aria-label="排行依據">
         <button type="button" data-view="marketCap" class="active" aria-pressed="true">市值排行</button>
         <button type="button" data-view="volume" aria-pressed="false">交易量排行</button>
+        <button type="button" data-view="combined" aria-pressed="false">交易成本排名</button>
       </div>
       <input id="search" type="text" placeholder="搜尋幣種名稱或代碼…" autocomplete="off">
       <button id="refresh" type="button"><span class="spin"></span><span id="refresh-label">重新整理</span></button>
@@ -286,11 +291,12 @@
           <th data-key="change30d">30d %<span class="arrow"></span></th>
           <th data-key="globalRank">全球市值名次<span class="arrow"></span></th>
           <th data-key="marketCap">市值<span class="arrow"></span></th>
-          <th data-key="volume">24h 交易量<span class="arrow"></span><span class="src" id="volume-src"></span></th>
+          <th class="hide-combined" data-key="volume">24h 交易量<span class="arrow"></span><span class="src" id="volume-src"></span></th>
+          <th class="combined-only" data-key="costDepth">成本 (10K)<span class="arrow"></span></th>
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="9" class="empty">載入中…</td></tr>
+        <tr><td colspan="${colspan}" class="empty">載入中…</td></tr>
       </tbody>
     </table>
   </div>
@@ -346,6 +352,7 @@
   // K 線：t = 該根開始時間（ms）、o / h / l / c = 開高低收、v = 成交量；由舊到新排列，最後一根尚未收盤。
   const CANDLESTICK_API = "https://api.crypto.com/exchange/v1/public/get-candlestick";
   // 所有交易商品（現貨 CCY_PAIR、永續 PERPETUAL_SWAP、期貨 FUTURE），用來列出各幣目前可交易的現貨交易對。
+  const BOOK_API = "https://api.crypto.com/exchange/v1/public/get-book";
   const INSTRUMENTS_API = "https://api.crypto.com/exchange/v1/public/get-instruments";
   // Crypto.com Exchange 官方上架公告（約一年份，含實際開放交易時間）。此端點沒有 CORS 標頭，瀏覽器無法直接讀，
   // 所以經 r.jina.ai 轉送：帶 accept: application/json 時，原始回應字串會放在 data.content。
@@ -354,7 +361,20 @@
   // CoinGecko 市場資料（免金鑰，有速率限制）。price_change_percentage 讓回應多帶 24h / 7d / 30d 漲跌幅。
   const COINGECKO_MARKETS_API = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&sparkline=false&price_change_percentage=24h,7d,30d";
 
-  // 兩個分頁的說明文字與交易量來源。兩個分頁的交易量來源不同，表頭與說明都要標清楚。
+  // 交易成本排名的參數。候選 = 全球市值前 COMBINED_MAX_GLOBAL_RANK 名中，Crypto.com 有 USD 現貨交易對（有成交）的幣，不限交易量名次，
+  // 去掉穩定幣與黃金代幣後，依「往返成本」由低到高排序，取前 COMBINED_SIZE 名。
+  const COMBINED_MAX_GLOBAL_RANK = 120;
+  const COMBINED_SIZE = 60;
+  // 往返成本 = 在 order book 上市價買入再賣出該金額（USD）的總滑價（bps，1 bps = 0.01%）。不含手續費。
+  // 排名用 COST_RANK_USD（使用者實際的單筆交易金額）；此金額很小，成本幾乎等於買賣價差，大幣常同為 0 bps，
+  // 所以同成本時再比 COST_DEPTH_USD 的成本（反映掛單深度）。
+  // 2026-10-01 實測（53 個候選）：$10K 只有 2 個幣吃不完 50 檔 order book，成本從 0 到 540 bps；$100K 有 35 個吃不完，不適合當參考金額。
+  const COST_RANK_USD = 30;
+  const COST_DEPTH_USD = 10000;
+  // 排除：穩定幣與黃金代幣的價格幾乎不動，成本不能和其他幣比，也不是此排名的用途。
+  const EXCLUDED_SYMBOLS = new Set(["USDT", "USDC", "DAI", "USDS", "USDE", "FDUSD", "TUSD", "PYUSD", "USDD", "XAUT", "PAXG"]);
+
+  // 各分頁的說明文字與交易量來源。兩個分頁的交易量來源不同，表頭與說明都要標清楚。
   const VIEWS = {
     marketCap: {
       volumeSource: "全球",
@@ -363,6 +383,10 @@
     volume: {
       volumeSource: "Crypto.com",
       note: "依 Crypto.com USD 現貨 24h 成交額排序；價格與漲跌幅為 Crypto.com 報價，市值與幣名以代碼對應 CoinGecko。"
+    },
+    combined: {
+      volumeSource: "Crypto.com",
+      note: `在 Crypto.com 上最容易交易（成本最低）的幣。候選：全球市值前 ${COMBINED_MAX_GLOBAL_RANK} 名中，Crypto.com 有 USD 現貨交易對的幣（排除穩定幣與黃金代幣，不限交易量名次）。依 order book 模擬「買入再賣出 $${COST_RANK_USD}」的往返成本（買賣價差加上吃單推動的價格，不含手續費）由低到高排序，同成本再比 $${COST_DEPTH_USD.toLocaleString()} 的成本（反映掛單深度），取前 ${COMBINED_SIZE} 名。「—」表示 order book（50 檔）吃不完該金額。價格、漲跌幅與交易量為 Crypto.com 資料。`
     }
   };
 
@@ -373,7 +397,8 @@
   //                  舊資料又蓋掉新資料。
   const datasets = {
     marketCap: { rows: [], error: "", warning: "", historyNote: "" },
-    volume: { rows: [], error: "", warning: "", historyNote: "" }
+    volume: { rows: [], error: "", warning: "", historyNote: "" },
+    combined: { rows: [], error: "", warning: "", historyNote: "" }
   };
   let activeView = "marketCap";
   let sortKey = "rank";
@@ -427,6 +452,32 @@
     return response.json();
   }
 
+  // Crypto.com 的 get-book / get-candlestick 每個交易對要各打一次。多個分頁同時載入會一次送出上百個請求而被限流，
+  // 所以統一排隊：同時最多 CRYPTO_CONCURRENCY 個，失敗（含限流）自動延後重試，最多 CRYPTO_RETRIES 次。
+  const CRYPTO_CONCURRENCY = 4;
+  const CRYPTO_RETRIES = 5;
+  const cryptoQueue = [];
+  let cryptoActive = 0;
+  function fetchCrypto(url){
+    return new Promise((resolve, reject) => {
+      cryptoQueue.push({ url, resolve, reject, tries: 0 });
+      pumpCryptoQueue();
+    });
+  }
+  function pumpCryptoQueue(){
+    while(cryptoActive < CRYPTO_CONCURRENCY && cryptoQueue.length){
+      const job = cryptoQueue.shift();
+      cryptoActive++;
+      fetchJson(job.url, "Crypto.com").then(job.resolve, err => {
+        if(++job.tries <= CRYPTO_RETRIES){
+          setTimeout(() => { cryptoQueue.unshift(job); pumpCryptoQueue(); }, 600 * job.tries);
+        } else {
+          job.reject(err);
+        }
+      }).finally(() => { cryptoActive--; pumpCryptoQueue(); });
+    }
+  }
+
   // CoinGecko 一筆 → 表格一列。兩個分頁共用這個列格式：
   //   { rank, name, symbol, image, price, change24h, change7d, change30d（百分比數值）, marketCap, volume（USD） }
   function fromCoinGecko(coin, index){
@@ -448,6 +499,18 @@
     };
   }
 
+  // CoinGecko 全球市值前 250 名。市值分頁與交易成本排名共用：同一輪 load() 只送一次請求（免費 API 限流嚴格），
+  // 用 generation 判斷是否為同一輪。請求失敗時清掉快取，下一輪重試。
+  let topCoinsRequest = { generation: -1, promise: null };
+  function fetchTopCoins(generation){
+    if(topCoinsRequest.generation !== generation){
+      const promise = fetchJson(`${COINGECKO_MARKETS_API}&order=market_cap_desc&per_page=250&page=1`, "CoinGecko");
+      topCoinsRequest = { generation, promise };
+      promise.catch(() => { if(topCoinsRequest.promise === promise) topCoinsRequest = { generation: -1, promise: null }; });
+    }
+    return topCoinsRequest.promise;
+  }
+
   async function loadMarketCapView(generation){
     const dataset = datasets.marketCap;
     try {
@@ -455,7 +518,7 @@
       // 以代碼比對 Crypto.com 現貨的 base 幣，再取前 50。# 為篩選後的名次，不是全球市值名次。
       // 以代碼比對有撞名風險；同代碼只取市值最大的那個（CoinGecko 依市值排序，先出現者優先）。
       const [coins, instrumentsPayload] = await Promise.all([
-        fetchJson(`${COINGECKO_MARKETS_API}&order=market_cap_desc&per_page=250&page=1`, "CoinGecko"),
+        fetchTopCoins(generation),
         fetchJson(INSTRUMENTS_API, "Crypto.com")
       ]);
       if(!Array.isArray(coins)) throw new Error("CoinGecko 回應格式不符");
@@ -532,6 +595,113 @@
     }
   }
 
+  // 在 order book 上模擬以 notional（USD）市價買入再賣出（往返），回傳往返交易成本的 bps（1 bps = 0.01%）：
+  // 買入成交均價高於中間價的比例 + 賣出成交均價低於中間價的比例。每一檔是 [價格, 數量, 筆數]。
+  // 書的總價值不到 notional（get-book 最多 50 檔，吃不完）或單邊為空時回傳 null。
+  function roundTripCostBps(book, notional){
+    const bids = book?.bids, asks = book?.asks;
+    if(!Array.isArray(bids) || !Array.isArray(asks) || !bids.length || !asks.length) return null;
+    const mid = (toNumber(bids[0][0]) + toNumber(asks[0][0])) / 2;
+    if(!(mid > 0)) return null;
+    const walk = levels => {
+      let spent = 0, qty = 0;
+      for(const level of levels){
+        const price = toNumber(level[0]), size = toNumber(level[1]);
+        if(!(price > 0) || !(size > 0)) continue;
+        const take = Math.min(price * size, notional - spent);
+        spent += take;
+        qty += take / price;
+        if(spent >= notional) return spent / qty;   // 平均成交價
+      }
+      return null;
+    };
+    const buyAvg = walk(asks), sellAvg = walk(bids);
+    if(buyAvg === null || sellAvg === null) return null;
+    return ((buyAvg - mid) / mid + (mid - sellAvg) / mid) * 10000;
+  }
+
+  // 交易成本排名（回答「在 Crypto.com 上哪些幣最容易交易、成本最低」）：
+  //   1. get-tickers 取所有有成交的 _USD 現貨（同 loadVolumeView 的篩選，但不截取名次）；
+  //   2. CoinGecko 全球市值前 COMBINED_MAX_GLOBAL_RANK 名（取自 fetchTopCoins，與市值分頁共用；symbols 參數上限 50 個，不適用），
+  //      以代碼對應，同代碼只取市值最大者，並去掉排除清單的幣；
+  //   3. 每個候選抓一次 get-book（分批並行），算 COST_RANK_USD 與 COST_DEPTH_USD 兩種金額的往返成本；
+  //   4. 依 COST_RANK_USD 的往返成本由低到高排序（吃不完的排最後，同成本再比 COST_DEPTH_USD 的成本與交易量），取前 COMBINED_SIZE 名；
+  //   5. 只對最後入選的幣補 7d / 30d（背景進行）。
+  // 任何一步失敗都保留上一次的資料，並在狀態列顯示錯誤。
+  async function loadCombinedView(generation){
+    const dataset = datasets.combined;
+    try {
+      const payload = await fetchJson(TICKERS_API, "Crypto.com");
+      const tickers = payload?.result?.data;
+      if(!Array.isArray(tickers)) throw new Error("Crypto.com 回應格式不符");
+      const top = tickers
+        .filter(t => typeof t.i === "string" && t.i.endsWith("_USD") && toNumber(t.vv) > 0);
+      const coins = (await fetchTopCoins(generation) || []).slice(0, COMBINED_MAX_GLOBAL_RANK);
+      if(generation !== loadGeneration) return;
+      const bySymbol = new Map();
+      coins.forEach(coin => {
+        const key = String(coin.symbol || "").toUpperCase();
+        if(!bySymbol.has(key)) bySymbol.set(key, coin);
+      });
+      const candidates = [];
+      top.forEach(t => {
+        const symbol = t.i.replace(/_USD$/, "");
+        const coin = bySymbol.get(symbol);
+        const globalRank = coin ? toNumber(coin.market_cap_rank) : null;
+        if(EXCLUDED_SYMBOLS.has(symbol) || globalRank === null || globalRank > COMBINED_MAX_GLOBAL_RANK) return;
+        const change = toNumber(t.c);
+        candidates.push({
+          rank: 0,
+          name: coin.name || symbol,
+          symbol,
+          image: coin.image,
+          instrument: t.i,
+          price: toNumber(t.a),
+          change24h: change === null ? null : change * 100,
+          change7d: null,
+          change30d: null,
+          marketCap: toNumber(coin.market_cap) || null,
+          globalRank,
+          volume: toNumber(t.vv),
+          costRank: null,
+          costDepth: null
+        });
+      });
+      // 抓 order book（每批 10 個並行）。單一幣失敗時成本為 null（排最後），不中斷整體。
+      let failed = 0;
+      for(let start = 0; start < candidates.length; start += 10){
+        dataset.historyNote = `正在讀取 order book（${start}/${candidates.length}）…`;
+        render();
+        const batch = candidates.slice(start, start + 10);
+        const results = await Promise.allSettled(batch.map(async row => {
+          const book = await fetchCrypto(`${BOOK_API}?instrument_name=${encodeURIComponent(row.instrument)}&depth=50`);
+          const data = book?.result?.data?.[0];
+          row.costRank = roundTripCostBps(data, COST_RANK_USD);
+          row.costDepth = roundTripCostBps(data, COST_DEPTH_USD);
+        }));
+        if(generation !== loadGeneration) return;
+        failed += results.filter(r => r.status === "rejected").length;
+      }
+      // 成本低的在前；null（吃不完或讀取失敗）排最後；同成本比小額成本，再比交易量。
+      const cmp = (a, b) => (a === null) - (b === null) || (a ?? 0) - (b ?? 0);
+      const ranked = candidates
+        .sort((a, b) => cmp(a.costRank, b.costRank) || cmp(a.costDepth, b.costDepth) || b.volume - a.volume)
+        .slice(0, COMBINED_SIZE);
+      ranked.forEach((row, i) => { row.rank = i + 1; });
+      dataset.rows = ranked;
+      dataset.error = "";
+      dataset.warning = failed ? `${failed} 個幣的 order book 讀取失敗，成本以「—」顯示並排在最後` : "";
+      dataset.historyNote = "正在計算 7d / 30d…";
+      render();
+      loadHistoricalChanges(ranked, generation, dataset);
+    } catch(err) {
+      if(generation !== loadGeneration) return;
+      dataset.error = errorMessage(err);
+      dataset.historyNote = "";
+      render();
+    }
+  }
+
   // 以代碼向 CoinGecko 查市值、全名與 Logo。include_tokens=top：同一代碼有多個幣時只回傳市值最大的那個；
   // 2026-10-01 實測交易量前 50 的代碼全部對到正確的幣（例如 CRO → crypto-com-chain、W → wormhole）。
   // 仍有風險：若 Crypto.com 上的幣與 CoinGecko 上市值最大的同代碼幣不是同一個，市值會對錯。
@@ -565,7 +735,7 @@
   // 用 4 小時而非日 K：日 K 的誤差最多一天，行情急漲時差很多（2026-10-01 實測 QNT 7d 日 K 算出 +225%，
   // 4 小時 K 為 +314%，CoinGecko 為 +322%）。
   // 每個交易對要各打一次 API，所以分批（每批 5 個）並行，每批完成就重繪一次。
-  async function loadHistoricalChanges(rows, generation){
+  async function loadHistoricalChanges(rows, generation, dataset = datasets.volume){
     const batchSize = 5;
     let failed = 0;
     for(let start = 0; start < rows.length; start += batchSize){
@@ -573,7 +743,7 @@
       const batch = rows.slice(start, start + batchSize);
       const results = await Promise.allSettled(batch.map(async row => {
         const url = `${CANDLESTICK_API}?instrument_name=${encodeURIComponent(row.instrument)}&timeframe=4h&count=200`;
-        const payload = await fetchJson(url, "Crypto.com");
+        const payload = await fetchCrypto(url);
         const candles = payload?.result?.data;
         if(!Array.isArray(candles) || !candles.length) return;
         const ordered = candles.slice().sort((a, b) => Number(a.t) - Number(b.t));
@@ -592,11 +762,16 @@
       if(generation !== loadGeneration) return;
       failed += results.filter(result => result.status === "rejected").length;
       const done = Math.min(start + batchSize, rows.length);
-      datasets.volume.historyNote = done < rows.length
+      dataset.historyNote = done < rows.length
         ? `正在計算 7d / 30d（${done}/${rows.length}）…`
         : (failed ? `${failed} 個幣的 7d / 30d 無法取得` : "");
       render();
     }
+  }
+
+  // 往返成本（bps）；null（order book 吃不完或讀取失敗）顯示「—」。
+  function fmtBps(n){
+    return n === null || n === undefined || !Number.isFinite(n) ? "—" : n.toFixed(n < 10 ? 2 : 1);
   }
 
   // 價格格式：≥ 1000 不顯示小數、≥ 1 顯示 2 位；< 1 改用 4 位有效數字，
@@ -659,6 +834,9 @@
   // 主表重繪：更新分頁 / 表頭狀態 → 依搜尋字（比對名稱與代碼）與前 10 大篩選 → 排序 → 用 innerHTML 換掉 tbody。
   function render(){
     const dataset = datasets[activeView];
+    const combined = activeView === "combined";
+    document.querySelector(".rank-table").classList.toggle("view-combined", combined);
+    const colspan = 9;
     viewNote.textContent = VIEWS[activeView].note;
     volumeSrc.textContent = VIEWS[activeView].volumeSource;
     viewTabs.forEach(btn => {
@@ -676,7 +854,7 @@
 
     if(!dataset.rows.length){
       tbody.innerHTML = dataset.error ? `
-        <tr><td colspan="9">
+        <tr><td colspan="${colspan}">
           <div class="error-box">
             <div class="msg">載入失敗：${escapeHtml(dataset.error)}</div>
             <div style="margin-bottom:14px; color:var(--text-faint);">
@@ -684,7 +862,7 @@
             </div>
             <button type="button" onclick="load()">重試</button>
           </div>
-        </td></tr>` : '<tr><td colspan="9" class="empty">載入中…</td></tr>';
+        </td></tr>` : `<tr><td colspan="${colspan}" class="empty">載入中…</td></tr>`;
       return;
     }
 
@@ -704,7 +882,7 @@
     });
 
     if(rows.length === 0){
-      tbody.innerHTML = `<tr><td colspan="9" class="empty">找不到符合「${escapeHtml(q)}」的幣種</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty">找不到符合「${escapeHtml(q)}」的幣種</td></tr>`;
       return;
     }
 
@@ -718,7 +896,8 @@
         <td>${pctCell(row.change30d)}</td>
         <td class="mcap">${row.globalRank ?? "—"}</td>
         <td class="mcap">${fmtUsdCompact(row.marketCap)}</td>
-        <td class="mcap">${fmtUsdCompact(row.volume)}</td>
+        <td class="mcap hide-combined">${fmtUsdCompact(row.volume)}</td>
+        <td class="combined-only mcap">${fmtBps(row.costDepth)}</td>
       </tr>`).join("");
   }
 
@@ -823,6 +1002,7 @@
     await Promise.allSettled([
       loadMarketCapView(generation),
       loadVolumeView(generation),
+      loadCombinedView(generation),
       loadListings(generation)
     ]);
     if(generation !== loadGeneration) return;
@@ -830,16 +1010,16 @@
     setLoading(false);
   }
 
-  // 點表頭排序：點同一欄切換升降冪；換欄時「#」「幣種」「全球市值名次」預設遞增，其餘數值欄預設遞減（大的在前）。
+  // 點表頭排序：點同一欄切換升降冪；換欄時「#」「幣種」「全球市值名次」「往返成本」預設遞增，其餘數值欄預設遞減（大的在前）。
   sortHeaders.forEach(th => {
     th.addEventListener("click", () => {
       const key = th.dataset.key;
-      if(sortKey === key){ sortDir *= -1; } else { sortKey = key; sortDir = (key === "rank" || key === "name" || key === "globalRank") ? 1 : -1; }
+      if(sortKey === key){ sortDir *= -1; } else { sortKey = key; sortDir = (key === "rank" || key === "name" || key === "globalRank" || key === "costDepth") ? 1 : -1; }
       render();
     });
   });
 
-  // 切換分頁：兩個分頁的資料在 load() 時都已載入，切換只需重繪（排序、搜尋、前 10 大設定沿用）。
+  // 切換分頁：各分頁的資料在 load() 時都已載入，切換只需重繪（排序、搜尋、前 10 大設定沿用）。
   viewTabs.forEach(btn => {
     btn.addEventListener("click", () => {
       activeView = btn.dataset.view;
@@ -862,7 +1042,7 @@
   top10Btn.addEventListener("click", () => {
     top10Only = !top10Only;
     top10Btn.classList.toggle("active", top10Only);
-    top10Btn.textContent = top10Only ? "顯示全部 50 大" : "只顯示前 10 大";
+    top10Btn.textContent = top10Only ? "顯示全部" : "只顯示前 10 大";
     render();
   });
 

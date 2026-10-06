@@ -4,14 +4,24 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0E1319">
+<script>
+  // 主題：深色（預設）或淺色，記在 localStorage。讀寫都可能失敗（無痕模式、封鎖網站資料），失敗就用預設深色。
+  try {
+    if(localStorage.getItem("theme") === "light"){
+      document.documentElement.dataset.theme = "light";
+      document.querySelector('meta[name="theme-color"]').content = "#F5F7FA";
+    }
+  } catch(err) {}
+</script>
 <title>Top 50</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   /* 色彩與字型 token。--gain / --loss 為漲跌色；--amber 為強調色（前 10 大切換、上架時間、載入轉圈）。
-     全頁只有深色主題，沒有淺色模式。 */
+     預設深色；<html data-theme="light"> 時改用下方淺色 token，右上角按鈕切換。 */
   :root{
+    color-scheme: dark;
     --bg: #0E1319;
     --bg-alt: #141B23;
     --surface: #171F28;
@@ -22,8 +32,30 @@
     --gain: #3ED598;
     --loss: #FF6B6A;
     --amber: #E8A93B;
+    --border-hover: var(--border-hover);
+    --row-hover: rgba(255,255,255,0.02);
+    --amber-soft: rgba(232,169,59,0.12);
+    --gain-soft: rgba(62,213,152,0.10);
     --sans: 'IBM Plex Sans', -apple-system, sans-serif;
     --mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+  }
+  /* 淺色主題：漲跌色與強調色調深一點，白底上才有足夠對比。 */
+  :root[data-theme="light"]{
+    color-scheme: light;
+    --bg: #F5F7FA;
+    --bg-alt: #EBEFF4;
+    --surface: #FFFFFF;
+    --border: #D3DAE3;
+    --text: #18202A;
+    --text-dim: #566272;
+    --text-faint: #8995A4;
+    --gain: #0A8F61;
+    --loss: #D13434;
+    --amber: #A86A00;
+    --border-hover: #9AA7B6;
+    --row-hover: rgba(0,0,0,0.03);
+    --amber-soft: rgba(168,106,0,0.12);
+    --gain-soft: rgba(10,143,97,0.10);
   }
   *{ box-sizing: border-box; }
   html,body{
@@ -49,6 +81,11 @@
   .sub{
     color: var(--text-dim); font-size: 13px; margin-top: 4px; font-family: var(--mono);
   }
+  button#theme-toggle{
+    background: var(--surface); border:1px solid var(--border); color: var(--text-dim);
+    padding: 7px 12px; border-radius: 6px; font-family: var(--sans); font-size: 13px; cursor: pointer;
+  }
+  button#theme-toggle:hover{ border-color: var(--border-hover); color: var(--text); }
   .controls{
     display:flex; align-items:center; gap:10px; margin-top:18px; flex-wrap: wrap;
   }
@@ -66,30 +103,30 @@
     width: 220px; outline:none;
   }
   input#search::placeholder{ color: var(--text-faint); }
-  input#search:focus{ border-color: #3A4A5F; }
+  input#search:focus{ border-color: var(--border-hover); }
   button#refresh{
     background: var(--surface); border:1px solid var(--border); color: var(--text);
     padding: 9px 14px; border-radius: 6px; font-family: var(--sans); font-size: 13px;
     cursor:pointer; display:flex; align-items:center; gap:8px;
   }
-  button#refresh:hover{ border-color:#3A4A5F; }
+  button#refresh:hover{ border-color:var(--border-hover); }
   button#refresh:disabled{ opacity:.5; cursor:default; }
   button#top10-toggle{
     background: var(--surface); border:1px solid var(--border); color: var(--text-dim);
     padding: 9px 14px; border-radius: 6px; font-family: var(--sans); font-size: 13px;
     cursor:pointer;
   }
-  button#top10-toggle:hover{ border-color:#3A4A5F; color: var(--text); }
+  button#top10-toggle:hover{ border-color:var(--border-hover); color: var(--text); }
   button#top10-toggle.active{
-    background: rgba(232,169,59,0.12); border-color: var(--amber); color: var(--amber);
+    background: var(--amber-soft); border-color: var(--amber); color: var(--amber);
   }
   .listing-filters{ display:flex; gap:6px; align-items:center; }
   .listing-filters button{
     background:var(--surface); border:1px solid var(--border); color:var(--text-dim);
     padding:7px 10px; border-radius:6px; font-family:var(--sans); font-size:12px; cursor:pointer;
   }
-  .listing-filters button:hover{ color:var(--text); border-color:#3A4A5F; }
-  .listing-filters button.active{ background:rgba(62,213,152,.10); border-color:var(--gain); color:var(--gain); }
+  .listing-filters button:hover{ color:var(--text); border-color:var(--border-hover); }
+  .listing-filters button.active{ background:var(--gain-soft); border-color:var(--gain); color:var(--gain); }
   /* 載入轉圈：預設隱藏，refresh 按鈕加上 .loading（見 setLoading）時才顯示。 */
   .spin{
     width:12px; height:12px; border-radius:50%;
@@ -136,7 +173,7 @@
     font-size: 13px; text-align: right; white-space: nowrap;
   }
   tbody tr:last-child td{ border-bottom: none; }
-  tbody tr:hover{ background: rgba(255,255,255,0.02); }
+  tbody tr:hover{ background: var(--row-hover); }
 
   td.rank{ color: var(--text-faint); text-align:left; width: 40px; }
   td.name-cell{ text-align:left; font-family: var(--sans); }
@@ -259,6 +296,7 @@
         <h1>Top 50</h1>
         <div class="sub" id="asof">尚未載入資料</div>
       </div>
+      <button id="theme-toggle" type="button" aria-label="切換背景色">☀ 白底</button>
     </div>
     <!-- 分頁、搜尋、前 10 大切換作用於主表；「重新整理」會重新載入主表兩個分頁與新上架區塊。 -->
     <div class="controls">
@@ -1037,6 +1075,22 @@
 
   searchInput.addEventListener("input", render);
   refreshBtn.addEventListener("click", load);
+
+  // 黑 / 白背景切換：改 <html data-theme>，同步 theme-color（iOS 狀態列顏色）並記住選擇。
+  // 按鈕文字顯示「按下後會變成的背景」。
+  const themeBtn = document.getElementById("theme-toggle");
+  function applyTheme(theme){
+    const light = theme === "light";
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+    document.querySelector('meta[name="theme-color"]').content = light ? "#F5F7FA" : "#0E1319";
+    themeBtn.textContent = light ? "☾ 黑底" : "☀ 白底";
+  }
+  applyTheme(document.documentElement.dataset.theme);
+  themeBtn.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    applyTheme(next);
+    try { localStorage.setItem("theme", next); } catch(err) {}
+  });
 
   const top10Btn = document.getElementById("top10-toggle");
   top10Btn.addEventListener("click", () => {

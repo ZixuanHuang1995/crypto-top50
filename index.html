@@ -296,7 +296,7 @@
         <h1>Top 50</h1>
         <div class="sub" id="asof">尚未載入資料</div>
       </div>
-      <button id="theme-toggle" type="button" aria-label="切換背景色">☀ 白底</button>
+      <button id="theme-toggle" type="button" aria-label="切換背景色">☀</button>
     </div>
     <!-- 分頁、搜尋、前 10 大切換作用於主表；「重新整理」會重新載入主表兩個分頁與新上架區塊。 -->
     <div class="controls">
@@ -334,7 +334,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="${colspan}" class="empty">載入中…</td></tr>
+        <tr><td colspan="9" class="empty">載入中…</td></tr>
       </tbody>
     </table>
   </div>
@@ -366,12 +366,16 @@
   /*
    * 資料流概覽
    *
-   * 主表有兩個分頁，資料各自載入、互不影響（一邊失敗另一邊照常顯示）：
-   *   市值排行   loadMarketCapView()  CoinGecko 依全球市值取前 50；價格、24h / 7d / 30d、市值、交易量一次取得。
-   *   交易量排行 loadVolumeView()     Crypto.com 全部 ticker → 只留 *_USD 現貨 → 依 24h 成交額取前 50，
-   *                                  之後在背景執行：
-   *                                    enrichFromCoinGecko()   以代碼向 CoinGecko 補市值、全名與 Logo
-   *                                    loadHistoricalChanges() 逐幣抓 Crypto.com 日 K 線算 7d / 30d
+   * 主表有三個分頁，資料各自載入、互不影響（一邊失敗另一邊照常顯示）：
+   *   市值排行     loadMarketCapView()  CoinGecko 市值前 250 名 → 只留 Crypto.com 可交易的 → 取前 50；
+   *                                    價格、24h / 7d / 30d、市值、交易量一次取得。
+   *   交易量排行   loadVolumeView()     Crypto.com 全部 ticker → 只留 *_USD 現貨 → 依 24h 成交額取前 50，
+   *                                    之後在背景執行：
+   *                                      enrichFromCoinGecko()   以代碼向 CoinGecko 補市值、全名與 Logo
+   *                                      loadHistoricalChanges() 逐幣抓 Crypto.com 4 小時 K 線算 7d / 30d
+   *   交易成本排名 loadCombinedView()   全球市值前 120 名中 Crypto.com 有 USD 現貨的幣 → 逐幣讀 order book 算往返成本
+   *                                    → 由低到高取前 60；7d / 30d 取自 CoinGecko。
+   *   Crypto.com 的 K 線與 order book 請求都經 fetchCrypto() 排隊並自動重試。
    *   任何資料到齊都呼叫 render() 重繪目前分頁；排序、搜尋、前 10 大篩選都在 render() 內處理。
    *
    * 新上架區塊
@@ -389,8 +393,9 @@
   const TICKERS_API = "https://api.crypto.com/exchange/v1/public/get-tickers";
   // K 線：t = 該根開始時間（ms）、o / h / l / c = 開高低收、v = 成交量；由舊到新排列，最後一根尚未收盤。
   const CANDLESTICK_API = "https://api.crypto.com/exchange/v1/public/get-candlestick";
-  // 所有交易商品（現貨 CCY_PAIR、永續 PERPETUAL_SWAP、期貨 FUTURE），用來列出各幣目前可交易的現貨交易對。
+  // order book：bids / asks 每檔為 [價格, 數量, 筆數]，最多 50 檔。
   const BOOK_API = "https://api.crypto.com/exchange/v1/public/get-book";
+  // 所有交易商品（現貨 CCY_PAIR、永續 PERPETUAL_SWAP、期貨 FUTURE），用來篩出可交易的現貨幣種與各幣的交易對。
   const INSTRUMENTS_API = "https://api.crypto.com/exchange/v1/public/get-instruments";
   // Crypto.com Exchange 官方上架公告（約一年份，含實際開放交易時間）。此端點沒有 CORS 標頭，瀏覽器無法直接讀，
   // 所以經 r.jina.ai 轉送：帶 accept: application/json 時，原始回應字串會放在 data.content。
@@ -424,7 +429,7 @@
     },
     combined: {
       volumeSource: "Crypto.com",
-      note: `在 Crypto.com 上最容易交易（成本最低）的幣。候選：全球市值前 ${COMBINED_MAX_GLOBAL_RANK} 名中，Crypto.com 有 USD 現貨交易對的幣（排除穩定幣與黃金代幣，不限交易量名次）。依 order book 模擬「買入再賣出 $${COST_RANK_USD}」的往返成本（買賣價差加上吃單推動的價格，不含手續費）由低到高排序，同成本再比 $${COST_DEPTH_USD.toLocaleString()} 的成本（反映掛單深度），取前 ${COMBINED_SIZE} 名。「—」表示 order book（50 檔）吃不完該金額。價格、漲跌幅與交易量為 Crypto.com 資料。`
+      note: `在 Crypto.com 上最容易交易（成本最低）的幣。候選：全球市值前 ${COMBINED_MAX_GLOBAL_RANK} 名中，Crypto.com 有 USD 現貨交易對的幣（排除穩定幣與黃金代幣，不限交易量名次）。依 order book 模擬「買入再賣出 $${COST_RANK_USD}」的往返成本（買賣價差加上吃單推動的價格，不含手續費）由低到高排序，同成本再比 $${COST_DEPTH_USD.toLocaleString()} 的成本（反映掛單深度），取前 ${COMBINED_SIZE} 名。「—」表示 order book（50 檔）吃不完該金額。價格與 24h 漲跌幅為 Crypto.com 資料，7d / 30d 取自 CoinGecko。`
     }
   };
 
@@ -433,11 +438,8 @@
   //                  warning 為次要資料失敗（例如市值補不到）；historyNote 為 7d / 30d 的計算進度或結果。
   //   loadGeneration 每次 load() 遞增。非同步結果回來時若編號已過期就丟棄，避免計算途中按了重新整理，
   //                  舊資料又蓋掉新資料。
-  const datasets = {
-    marketCap: { rows: [], error: "", warning: "", historyNote: "" },
-    volume: { rows: [], error: "", warning: "", historyNote: "" },
-    combined: { rows: [], error: "", warning: "", historyNote: "" }
-  };
+  const datasets = Object.fromEntries(["marketCap", "volume", "combined"]
+    .map(view => [view, { rows: [], error: "", warning: "", historyNote: "" }]));
   let activeView = "marketCap";
   let sortKey = "rank";
   let sortDir = 1;          // 1 = 遞增、-1 = 遞減
@@ -474,6 +476,24 @@
     if(value === null || value === undefined || value === "") return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
+  }
+
+  // CoinGecko 幣列表 → Map<大寫代碼, 幣>。同代碼只留第一筆；CoinGecko 依市值排序，所以留下市值最大的。
+  function indexBySymbol(coins){
+    const map = new Map();
+    coins.forEach(coin => {
+      const key = String(coin.symbol || "").toUpperCase();
+      if(!map.has(key)) map.set(key, coin);
+    });
+    return map;
+  }
+
+  // Crypto.com get-tickers 回應 → 有成交的 *_USD 現貨 ticker。以 "_USD" 結尾：排除永續合約（BTCUSD-PERP）與
+  // USDT 計價（BTC_USDT），每個幣只取一個 USD 現貨交易對，成交額才能互相比較。
+  function usdSpotTickers(payload){
+    const tickers = payload?.result?.data;
+    if(!Array.isArray(tickers)) throw new Error("Crypto.com 回應格式不符");
+    return tickers.filter(t => typeof t.i === "string" && t.i.endsWith("_USD") && toNumber(t.vv) > 0);
   }
 
   function errorMessage(err){
@@ -516,7 +536,7 @@
     }
   }
 
-  // CoinGecko 一筆 → 表格一列。兩個分頁共用這個列格式：
+  // CoinGecko 一筆 → 表格一列。各分頁共用這個列格式：
   //   { rank, name, symbol, image, price, change24h, change7d, change30d（百分比數值）, marketCap, volume（USD） }
   function fromCoinGecko(coin, index){
     const symbol = String(coin.symbol || "").toUpperCase();
@@ -566,16 +586,10 @@
       const tradable = new Set(instruments
         .filter(item => item.inst_type === "CCY_PAIR" && item.tradable && item.base_ccy)
         .map(item => item.base_ccy.toUpperCase()));
-      const seen = new Set();
-      dataset.rows = coins
-        .filter(coin => {
-          const symbol = String(coin.symbol || "").toUpperCase();
-          if(!tradable.has(symbol) || seen.has(symbol)) return false;
-          seen.add(symbol);
-          return true;
-        })
+      dataset.rows = [...indexBySymbol(coins)]
+        .filter(([symbol]) => tradable.has(symbol))
         .slice(0, 50)
-        .map(fromCoinGecko);
+        .map(([, coin], i) => fromCoinGecko(coin, i));
       dataset.error = "";
     } catch(err) {
       if(generation !== loadGeneration) return;
@@ -588,16 +602,12 @@
   async function loadVolumeView(generation){
     const dataset = datasets.volume;
     try {
-      const payload = await fetchJson(TICKERS_API, "Crypto.com");
-      const tickers = payload?.result?.data;
-      if(!Array.isArray(tickers)) throw new Error("Crypto.com 回應格式不符");
+      const tickers = usdSpotTickers(await fetchJson(TICKERS_API, "Crypto.com"));
       if(generation !== loadGeneration) return;
       // 上一輪補到的幣名與 Logo 先沿用，避免重新整理時名稱閃回代碼；數值類欄位一律重算。
       const previous = new Map(dataset.rows.map(row => [row.symbol, row]));
       dataset.rows = tickers
-        // 以 "_USD" 結尾：排除永續合約（BTCUSD-PERP）與 USDT 計價（BTC_USDT），每個幣只取一個 USD 現貨交易對，
-        // 成交額才能互相比較。穩定幣與黃金代幣也會入榜（例如 USDT_USD、PAXG_USD、XAUT_USD）。
-        .filter(t => typeof t.i === "string" && t.i.endsWith("_USD") && toNumber(t.vv) > 0)
+        // 穩定幣與黃金代幣也會入榜（例如 USDT_USD、PAXG_USD、XAUT_USD）。
         .sort((a, b) => toNumber(b.vv) - toNumber(a.vv))
         .slice(0, 50)
         .map((t, i) => {
@@ -664,23 +674,15 @@
   //      以代碼對應，同代碼只取市值最大者，並去掉排除清單的幣；
   //   3. 每個候選抓一次 get-book（分批並行），算 COST_RANK_USD 與 COST_DEPTH_USD 兩種金額的往返成本；
   //   4. 依 COST_RANK_USD 的往返成本由低到高排序（吃不完的排最後，同成本再比 COST_DEPTH_USD 的成本與交易量），取前 COMBINED_SIZE 名；
-  //   5. 只對最後入選的幣補 7d / 30d（背景進行）。
+  //   5. 7d / 30d 直接取自 CoinGecko 市值榜（不另外抓 K 線，請求太多會被限流）。
   // 任何一步失敗都保留上一次的資料，並在狀態列顯示錯誤。
   async function loadCombinedView(generation){
     const dataset = datasets.combined;
     try {
-      const payload = await fetchJson(TICKERS_API, "Crypto.com");
-      const tickers = payload?.result?.data;
-      if(!Array.isArray(tickers)) throw new Error("Crypto.com 回應格式不符");
-      const top = tickers
-        .filter(t => typeof t.i === "string" && t.i.endsWith("_USD") && toNumber(t.vv) > 0);
+      const top = usdSpotTickers(await fetchJson(TICKERS_API, "Crypto.com"));
       const coins = (await fetchTopCoins(generation) || []).slice(0, COMBINED_MAX_GLOBAL_RANK);
       if(generation !== loadGeneration) return;
-      const bySymbol = new Map();
-      coins.forEach(coin => {
-        const key = String(coin.symbol || "").toUpperCase();
-        if(!bySymbol.has(key)) bySymbol.set(key, coin);
-      });
+      const bySymbol = indexBySymbol(coins);
       const candidates = [];
       top.forEach(t => {
         const symbol = t.i.replace(/_USD$/, "");
@@ -696,8 +698,8 @@
           instrument: t.i,
           price: toNumber(t.a),
           change24h: change === null ? null : change * 100,
-          change7d: null,
-          change30d: null,
+          change7d: toNumber(coin.price_change_percentage_7d_in_currency),
+          change30d: toNumber(coin.price_change_percentage_30d_in_currency),
           marketCap: toNumber(coin.market_cap) || null,
           globalRank,
           volume: toNumber(t.vv),
@@ -729,9 +731,8 @@
       dataset.rows = ranked;
       dataset.error = "";
       dataset.warning = failed ? `${failed} 個幣的 order book 讀取失敗，成本以「—」顯示並排在最後` : "";
-      dataset.historyNote = "正在計算 7d / 30d…";
+      dataset.historyNote = "";
       render();
-      loadHistoricalChanges(ranked, generation, dataset);
     } catch(err) {
       if(generation !== loadGeneration) return;
       dataset.error = errorMessage(err);
@@ -749,11 +750,7 @@
       const coins = await fetchJson(`${COINGECKO_MARKETS_API}&symbols=${symbols}&include_tokens=top&per_page=250`, "CoinGecko");
       if(!Array.isArray(coins)) throw new Error("CoinGecko 回應格式不符");
       if(generation !== loadGeneration) return;
-      const bySymbol = new Map();
-      coins.forEach(coin => {
-        const key = String(coin.symbol || "").toUpperCase();
-        if(!bySymbol.has(key)) bySymbol.set(key, coin);
-      });
+      const bySymbol = indexBySymbol(coins);
       rows.forEach(row => {
         const coin = bySymbol.get(row.symbol);
         if(!coin) return;
@@ -773,7 +770,7 @@
   // 用 4 小時而非日 K：日 K 的誤差最多一天，行情急漲時差很多（2026-10-01 實測 QNT 7d 日 K 算出 +225%，
   // 4 小時 K 為 +314%，CoinGecko 為 +322%）。
   // 每個交易對要各打一次 API，所以分批（每批 5 個）並行，每批完成就重繪一次。
-  async function loadHistoricalChanges(rows, generation, dataset = datasets.volume){
+  async function loadHistoricalChanges(rows, generation){
     const batchSize = 5;
     let failed = 0;
     for(let start = 0; start < rows.length; start += batchSize){
@@ -800,7 +797,7 @@
       if(generation !== loadGeneration) return;
       failed += results.filter(result => result.status === "rejected").length;
       const done = Math.min(start + batchSize, rows.length);
-      dataset.historyNote = done < rows.length
+      datasets.volume.historyNote = done < rows.length
         ? `正在計算 7d / 30d（${done}/${rows.length}）…`
         : (failed ? `${failed} 個幣的 7d / 30d 無法取得` : "");
       render();
@@ -874,7 +871,6 @@
     const dataset = datasets[activeView];
     const combined = activeView === "combined";
     document.querySelector(".rank-table").classList.toggle("view-combined", combined);
-    const colspan = 9;
     viewNote.textContent = VIEWS[activeView].note;
     volumeSrc.textContent = VIEWS[activeView].volumeSource;
     viewTabs.forEach(btn => {
@@ -892,7 +888,7 @@
 
     if(!dataset.rows.length){
       tbody.innerHTML = dataset.error ? `
-        <tr><td colspan="${colspan}">
+        <tr><td colspan="9">
           <div class="error-box">
             <div class="msg">載入失敗：${escapeHtml(dataset.error)}</div>
             <div style="margin-bottom:14px; color:var(--text-faint);">
@@ -900,7 +896,7 @@
             </div>
             <button type="button" onclick="load()">重試</button>
           </div>
-        </td></tr>` : `<tr><td colspan="${colspan}" class="empty">載入中…</td></tr>`;
+        </td></tr>` : `<tr><td colspan="9" class="empty">載入中…</td></tr>`;
       return;
     }
 
@@ -920,7 +916,7 @@
     });
 
     if(rows.length === 0){
-      tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty">找不到符合「${escapeHtml(q)}」的幣種</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">找不到符合「${escapeHtml(q)}」的幣種</td></tr>`;
       return;
     }
 
@@ -1032,15 +1028,24 @@
     refreshLabel.textContent = on ? "載入中" : "重新整理";
   }
 
-  // 重新載入全部資料：兩個分頁與新上架區塊並行，各自處理錯誤。
+  // 各分頁的載入函式，以及每個分頁最近一次載入時的 loadGeneration。
+  // 只載入目前分頁；其他分頁第一次切過去、或「重新整理」之後切過去時才載入，舊資料先留在畫面上。
+  // 原因：Crypto.com 公開 API 會限流，三個分頁一起載入要送約 250 個請求，大量失敗重試後反而更慢。
+  const viewLoaders = { marketCap: loadMarketCapView, volume: loadVolumeView, combined: loadCombinedView };
+  const loadedAt = {};
+  function loadView(view){
+    if(loadedAt[view] === loadGeneration) return Promise.resolve();
+    loadedAt[view] = loadGeneration;
+    return viewLoaders[view](loadGeneration);
+  }
+
+  // 重新載入：目前分頁與新上架區塊並行，各自處理錯誤。
   // 7d / 30d 與市值補充在背景繼續跑，不會讓按鈕一直停在「載入中」。
   async function load(){
     const generation = ++loadGeneration;
     setLoading(true);
     await Promise.allSettled([
-      loadMarketCapView(generation),
-      loadVolumeView(generation),
-      loadCombinedView(generation),
+      loadView(activeView),
       loadListings(generation)
     ]);
     if(generation !== loadGeneration) return;
@@ -1057,11 +1062,12 @@
     });
   });
 
-  // 切換分頁：各分頁的資料在 load() 時都已載入，切換只需重繪（排序、搜尋、前 10 大設定沿用）。
+  // 切換分頁：先重繪（排序、搜尋、前 10 大設定沿用），該分頁還沒載入過就接著載入。
   viewTabs.forEach(btn => {
     btn.addEventListener("click", () => {
       activeView = btn.dataset.view;
       render();
+      loadView(activeView);
     });
   });
 
@@ -1077,13 +1083,13 @@
   refreshBtn.addEventListener("click", load);
 
   // 黑 / 白背景切換：改 <html data-theme>，同步 theme-color（iOS 狀態列顏色）並記住選擇。
-  // 按鈕文字顯示「按下後會變成的背景」。
+  // 按鈕只顯示圖示（☀ = 按下後變白底、☾ = 按下後變黑底），文字說明由 aria-label 提供。
   const themeBtn = document.getElementById("theme-toggle");
   function applyTheme(theme){
     const light = theme === "light";
     document.documentElement.dataset.theme = light ? "light" : "dark";
     document.querySelector('meta[name="theme-color"]').content = light ? "#F5F7FA" : "#0E1319";
-    themeBtn.textContent = light ? "☾ 黑底" : "☀ 白底";
+    themeBtn.textContent = light ? "☾" : "☀";
   }
   applyTheme(document.documentElement.dataset.theme);
   themeBtn.addEventListener("click", () => {
